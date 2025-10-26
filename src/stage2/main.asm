@@ -1,37 +1,133 @@
 bits 16
-org 0x7E00
 
-main:
-    mov si, msg_hello
-    call puts
+section .entry
+
+global entry
+extern cstart
+
+entry:
+    cli
+
+    xor dh, dh
+    mov [boot_drive], dl
+
+    call enableA20
+    call loadGDT
+
+    mov eax, cr0
+    or al, 1
+    mov cr0, eax
+
+    jmp dword 08h:.pmode
+
+.pmode:
+    [bits 32]
+    mov ax, 0x10
+    mov ds, ax
+    mov ss, ax
+
+    xor edx, edx
+    mov dl, [boot_drive]
+    push edx
+    call cstart
 
 halt:
-    cli
     hlt
-
 .loop
     jmp .loop
 
-puts:
-    push ax
-    push bx
-    push si
 
-.loop:
-    lodsb ; load byte from ds:si to al and increment si
-    or al, al
-    jz .done
+enableA20:
+    [bits 16]
+    call a20wait_input
+    mov al, kbd_disable
+    out kbd_cmd, al
 
-    mov bh, 0
-    mov ah, 0x0E
-    int 0x10
+    call a20wait_input
+    mov al, kbd_read_ctrl
+    out kbd_cmd, al
 
-    jmp .loop
+    call a20wait_output
+    in al, kbd_data
+    push eax
 
-.done:
-    pop si
-    pop bx
-    pop ax
+    call a20wait_input
+    pop eax
+    or al, 2
+    out kbd_data, al
+
+    call a20wait_input
+    mov al, kbd_enable
+    out kbd_cmd, al
+
+    call a20wait_input
+
     ret
 
-msg_hello: db "Hello from stage 2!", 0x0A, 0x0D, 0
+a20wait_input:
+    [bits 16]
+    in al, kbd_cmd
+    test al, 2
+    jnz a20wait_input
+    ret
+
+a20wait_output:
+    [bits 16]
+    in al, kbd_cmd
+    test al, 1
+    jz a20wait_output
+    ret
+
+loadGDT:
+    [bits 16]
+    lgdt [GDTDesc]
+    ret
+
+section .data
+
+boot_drive: db 0
+
+GDT:        ; NULL descriptor
+            dq 0
+
+            ; 32-bit code segment
+            dw 0FFFFh                   ; limit (bits 0-15) = 0xFFFFF for full 32-bit range
+            dw 0                        ; base (bits 0-15) = 0x0
+            db 0                        ; base (bits 16-23)
+            db 10011010b                ; access (present, ring 0, code segment, executable, direction 0, readable)
+            db 11001111b                ; granularity (4k pages, 32-bit pmode) + limit (bits 16-19)
+            db 0                        ; base high
+
+            ; 32-bit data segment
+            dw 0FFFFh                   ; limit (bits 0-15) = 0xFFFFF for full 32-bit range
+            dw 0                        ; base (bits 0-15) = 0x0
+            db 0                        ; base (bits 16-23)
+            db 10010010b                ; access (present, ring 0, data segment, executable, direction 0, writable)
+            db 11001111b                ; granularity (4k pages, 32-bit pmode) + limit (bits 16-19)
+            db 0                        ; base high
+
+            ; 16-bit code segment
+            dw 0FFFFh                   ; limit (bits 0-15) = 0xFFFFF
+            dw 0                        ; base (bits 0-15) = 0x0
+            db 0                        ; base (bits 16-23)
+            db 10011010b                ; access (present, ring 0, code segment, executable, direction 0, readable)
+            db 00001111b                ; granularity (1b pages, 16-bit pmode) + limit (bits 16-19)
+            db 0                        ; base high
+
+            ; 16-bit data segment
+            dw 0FFFFh                   ; limit (bits 0-15) = 0xFFFFF
+            dw 0                        ; base (bits 0-15) = 0x0
+            db 0                        ; base (bits 16-23)
+            db 10010010b                ; access (present, ring 0, data segment, executable, direction 0, writable)
+            db 00001111b                ; granularity (1b pages, 16-bit pmode) + limit (bits 16-19)
+            db 0                        ; base high
+
+GDTDesc:  dw GDTDesc - GDT - 1
+          dd GDT
+
+kbd_cmd equ 0x64
+kbd_data equ 0x60
+kbd_disable equ 0xAD
+kbd_enable equ 0xAE
+kbd_read_ctrl equ 0xD0
+kbd_write_ctrl equ 0xD1
